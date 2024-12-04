@@ -1,71 +1,83 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import { IERC721Receiver } from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import { INonfungiblePositionManager } from "./INonfungiblePositionManager.sol";
 import { IUniswapV3Factory } from "./IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "./IUniswapV3Pool.sol";
 import { ISwapRouter } from "./ISwapRouter.sol";
 
-contract Locker is IERC721Receiver, Ownable {
-    uint24 public constant FEE_TIER = 10000;
-    int24 public constant INITIAL_TICK = -184200;
-    int24 public constant TICK_SPACING_10000 = 200;
-    int24 public constant MAX_TICK = 887200;
+contract Locker is IERC721Receiver {
+    address private constant WETH = 0x4200000000000000000000000000000000000006;
+    uint24 private constant FEE_TIER = 10000;
+    int24 private constant TICK_SPACING = 200;
+    int24 private constant INITIAL_TICK = -163400; // Mcap = 80e
+    int24 private constant MAX_TICK = 887200;
 
-    address public WETH = 0x4200000000000000000000000000000000000006;
+    INonfungiblePositionManager private constant UNISWAP_V3_POSITION_MANAGER = INonfungiblePositionManager(0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1);
+    IUniswapV3Factory private constant UNISWAP_V3_FACTORY = IUniswapV3Factory(0x33128a8fC17869897dcE68Ed026d694621f6FDfD);
+    ISwapRouter private constant SWAP_ROUTER = ISwapRouter(0x2626664c2603336E57B271c5C0b26F421741e481);
 
-    INonfungiblePositionManager public UNISWAP_V3_POSITION_MANAGER = INonfungiblePositionManager(0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1);
-    ISwapRouter public SWAP_ROUTER = ISwapRouter(0x2626664c2603336E57B271c5C0b26F421741e481);
-    IUniswapV3Factory public UNISWAP_V3_FACTORY = IUniswapV3Factory(0x33128a8fC17869897dcE68Ed026d694621f6FDfD);
+    uint private _tightRangeLPTokenId;
+    uint private _looseRangeLPTokenId;
+    address private _token;
 
-    mapping(address => uint) public lpTokenIds;
-    address private immutable _launcher;
+    function init(address token, uint quantity) external payable {
+        require(_token == address(0), "Already initialized");
+        _token = token;
 
-    constructor() {
-        _launcher = msg.sender;
-        _transferOwnership(tx.origin);
-    }
+        IERC20(token).transferFrom(msg.sender, address(this), quantity);
+        IERC20(token).approve(address(UNISWAP_V3_POSITION_MANAGER), quantity);
 
-    function createAndFundLP(address token, uint amount) public payable {
-        require(_launcher == msg.sender, "Not allowed");
+        bool flip = WETH < token;
 
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
-
-        (address token0, address token1) = WETH < token ? (WETH, token) : (token, WETH);
-        (uint amount0, uint amount1) = WETH < token ? (uint(0), amount) : (amount, uint(0));
-        (int24 tickLower, int24 tickUpper) = WETH < token ? (-1 * MAX_TICK, -1 * INITIAL_TICK) : (INITIAL_TICK, MAX_TICK);
-        int24 initialTick = WETH < token ? (-1 * INITIAL_TICK) : INITIAL_TICK;
-
+        int24 initialTick = flip ? (-1 * INITIAL_TICK) : INITIAL_TICK;
         uint160 sqrtPriceX96 = _getSqrtRatioAtTick(initialTick);
-        address pool = UNISWAP_V3_FACTORY.createPool(address(token), WETH, FEE_TIER);
+        address pool = UNISWAP_V3_FACTORY.createPool(token, WETH, FEE_TIER);
         IUniswapV3Pool(pool).initialize(sqrtPriceX96);
 
         INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
-            token0: token0,
-            token1: token1,
+            token0: flip ? WETH : token,
+            token1: flip ? token : WETH,
             fee: FEE_TIER,
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            amount0Desired: amount0,
-            amount1Desired: amount1,
+            tickLower: 0,
+            tickUpper: 0,
+            amount0Desired: 0,
+            amount1Desired: 0,
             amount0Min: 0,
             amount1Min: 0,
             recipient: address(this),
             deadline: block.timestamp
         });
 
-        IERC20(token).approve(address(UNISWAP_V3_POSITION_MANAGER), amount);
-        (uint lpTokenId,,,) = UNISWAP_V3_POSITION_MANAGER.mint(mintParams);
+        // Put 20% in the tight LP, starting on the initial tick
+        mintParams.amount0Desired = quantity / 5;
+        mintParams.amount1Desired = 0;
+        mintParams.tickLower = INITIAL_TICK;
+        mintParams.tickUpper = INITIAL_TICK + TICK_SPACING;
+        if (flip) {
+            (mintParams.tickLower, mintParams.tickUpper) = (-1 * mintParams.tickUpper, -1 * mintParams.tickLower);
+            (mintParams.amount0Desired, mintParams.amount1Desired) = (mintParams.amount1Desired, mintParams.amount0Desired);
+        }
+        (_tightRangeLPTokenId,,,) = UNISWAP_V3_POSITION_MANAGER.mint(mintParams);
 
-        lpTokenIds[token] = lpTokenId;
+        // Put 80% in the loose LP, starting just off the initial tick
+        mintParams.amount0Desired = quantity * 4 / 5;
+        mintParams.amount1Desired = 0;
+        mintParams.tickLower = INITIAL_TICK + TICK_SPACING;
+        mintParams.tickUpper = MAX_TICK;
+        if (flip) {
+            (mintParams.tickLower, mintParams.tickUpper) = (-1 * mintParams.tickUpper, -1 * mintParams.tickLower);
+            (mintParams.amount0Desired, mintParams.amount1Desired) = (mintParams.amount1Desired, mintParams.amount0Desired);
+        }
+        (_looseRangeLPTokenId,,,) = UNISWAP_V3_POSITION_MANAGER.mint(mintParams);
 
         if (msg.value > 0) {
             ISwapRouter.ExactInputSingleParams memory swapParams = ISwapRouter.ExactInputSingleParams({
                 tokenIn: WETH,
-                tokenOut: address(token),
+                tokenOut: token,
                 fee: FEE_TIER,
                 recipient: msg.sender,
                 amountIn: msg.value,
@@ -78,26 +90,32 @@ contract Locker is IERC721Receiver, Ownable {
         }
     }
 
-    /// @notice Collects fees from the LP position
-    /// @return amount0 The amount of token0 collected
-    /// @return amount1 The amount of token1 collected
-    function collectFees(address token, address recipient) onlyOwner external returns (uint256 amount0, uint256 amount1) {
-        uint lpTokenId = lpTokenIds[token];
-
-        require(lpTokenId != 0, "No LP position");
+    function collectFees() external returns (uint256, uint256) {
+        require(msg.sender == _token, "Only Token can collect fees");
 
         INonfungiblePositionManager.CollectParams memory collectParams = INonfungiblePositionManager.CollectParams({
-            tokenId: lpTokenId,
-            recipient: recipient,
+            tokenId: _tightRangeLPTokenId,
+            recipient: _token,
             amount0Max: type(uint128).max,
             amount1Max: type(uint128).max
         });
+        (uint tightFees0, uint tightFees1) = UNISWAP_V3_POSITION_MANAGER.collect(collectParams);
 
-        (amount0, amount1) = UNISWAP_V3_POSITION_MANAGER.collect(collectParams);
+        collectParams.tokenId = _looseRangeLPTokenId;
+        (uint looseFees0, uint looseFees1) = UNISWAP_V3_POSITION_MANAGER.collect(collectParams);
+
+        return (tightFees0 + looseFees0, tightFees1 + looseFees1);
     }
 
-    /// @notice Allows contract to receive refund from Uniswap's position manager
-    receive() external payable {}
+    /// @notice Allow refunds from Uniswap position manager
+    receive() external payable {
+        address recipient = Ownable(_token).owner();
+        if (recipient == address(0)) {
+            recipient = tx.origin;
+        }
+        (bool success,) = recipient.call{value: msg.value}("");
+        require(success, "Unable to send funds");
+    }
 
     /// @notice Allows receiving of LP NFT on contract
     function onERC721Received(
@@ -145,5 +163,21 @@ contract Locker is IERC721Receiver, Ownable {
         // we then downcast because we know the result always fits within 160 bits due to our tick input constraint
         // we round up in the division so getTickAtSqrtRatio of the output price is always consistent
         sqrtPriceX96 = uint160((ratio >> 32) + (ratio % (1 << 32) == 0 ? 0 : 1));
+    }
+
+    function owner() external view returns (address) {
+        return _token;
+    }
+
+    function getToken() external view returns (address) {
+        return _token;
+    }
+
+    function getTightRangeLPTokenId() external view returns (uint) {
+        return _tightRangeLPTokenId;
+    }
+
+    function getLooseRangeLPTokenId() external view returns (uint) {
+        return _looseRangeLPTokenId;
     }
 }

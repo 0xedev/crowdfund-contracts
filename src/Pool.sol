@@ -95,7 +95,7 @@ contract Pool {
     }
 
     function getStartTime() public view returns (uint256) {
-        return _periodFinish - _rewardDuration;
+        return _periodFinish.sub(_rewardDuration);
     }
 
     function getEndTime() public view returns (uint256) {
