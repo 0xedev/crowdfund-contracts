@@ -42,7 +42,6 @@ contract Token is ERC20Burnable, Ownable {
         _stakerTemplate = address(new Staker());
     }
 
-    // 0x4133c79e575591b6c380c233fffb47a13348de86, "TESTv2", "TESTv2", "https://www.solodev.com/file/13466e21-dd2c-11ec-b9ad-0eaef3759f5f/Hardhat-Logo-Icon.png"
     function init(address creator, string memory title, string memory ticker, string memory icon) external payable {
         require(address(_funder) == address(0), "Already initialized");
 
@@ -63,7 +62,7 @@ contract Token is ERC20Burnable, Ownable {
         _approve(token, address(locker), SUPPLY_LOOSE_LP + SUPPLY_TIGHT_LP);
         _approve(token, address(staker), SUPPLY_LP_INCENTIVES);
 
-        funder.init(token, SUPPLY_HIRING, creator, ticker);
+        funder.init(token, SUPPLY_HIRING, creator, ticker, address(staker), address(_launcher));
         locker.init{value: msg.value}(token, SUPPLY_LOOSE_LP + SUPPLY_TIGHT_LP);
         staker.init(token);
 
@@ -78,18 +77,39 @@ contract Token is ERC20Burnable, Ownable {
         _transferOwnership(creator);
     }
 
-    function collectFees() external {
-        (uint amount0, uint amount1) = _locker.collectFees();
-        address token = address(this);
-        (uint eth, uint tokens) = WETH < token ? (amount0, amount1) : (amount1, amount0);
-
+    function collectFees() public {
+        uint balanceBefore = IERC20(WETH).balanceOf(address(this));
+        _locker.collectFees();
+        uint balanceAfter = IERC20(WETH).balanceOf(address(this));
+        uint eth = balanceAfter - balanceBefore;
         if (eth > 0) {
-            IERC20(WETH).transfer(getLauncher(), eth / 10);
-            IERC20(WETH).transfer(owner(), eth * 9 / 10);
+            if (owner() == address(0)) {
+                IERC20(WETH).transfer(getLauncher(), eth);
+            } else {
+                IERC20(WETH).transfer(getLauncher(), eth / 10);
+            }
         }
+        uint tokens = balanceOf(address(this));
         if (tokens > 0) {
-            _transfer(token, getFunder(), tokens);
+            _transfer(address(this), getFunder(), tokens);
         }
+    }
+
+    function claimFeesTo(uint quantity, address recipient) external onlyOwner {
+        collectFees();
+        IERC20(WETH).transfer(recipient, quantity);
+    }
+
+    function claimFeesTo(address recipient) external onlyOwner {
+        collectFees();
+        uint quantity = IERC20(WETH).balanceOf(address(this));
+        IERC20(WETH).transfer(recipient, quantity);
+    }
+
+    function claimFees() external onlyOwner {
+        collectFees();
+        uint quantity = IERC20(WETH).balanceOf(address(this));
+        IERC20(WETH).transfer(msg.sender, quantity);
     }
 
     function renounceOwnership() public override onlyOwner {

@@ -14,6 +14,7 @@ contract Launcher is Ownable {
 
     EnumerableSet.AddressSet private _tokens;
     EnumerableSet.AddressSet private _deployers;
+    EnumerableSet.AddressSet private _protocols;
 
     mapping(address => EnumerableSet.AddressSet) private _userManagedTokens;
     mapping(address => EnumerableSet.AddressSet) private _userCreatedTokens;
@@ -27,26 +28,28 @@ contract Launcher is Ownable {
     constructor() {
         _tokenTemplate = address(new Token());
         _deployers.add(msg.sender);
+        _protocols.add(0x2D2BB82ab894267C5Ba80D26e9B4f7470315Bdd8); // Job Board
     }
 
-    function launch(address owner, string memory name, string memory ticker, string memory icon) external payable {
+    function launch(address owner, string memory name, string memory ticker, string memory icon) external payable returns (address) {
         require(_deployers.contains(msg.sender), ERROR_NOT_AUTHORIZED);
 
-        _launch(owner, name, ticker, icon);
+        return _launch(owner, name, ticker, icon);
     }
 
-    function launch(string memory name, string memory ticker, string memory icon) external payable {
+    function launch(string memory name, string memory ticker, string memory icon) external payable returns (address) {
         require(_permissionless, ERROR_NOT_AUTHORIZED);
 
-        _launch(msg.sender, name, ticker, icon);
+        return _launch(msg.sender, name, ticker, icon);
     }
 
-    function _launch(address creator, string memory name, string memory ticker, string memory icon) internal {
+    function _launch(address creator, string memory name, string memory ticker, string memory icon) internal returns (address) {
         address payable token = payable(Clones.cloneDeterministic(address(_tokenTemplate), bytes32(_nonce++)));
         Token(token).init{value: msg.value}(creator, name, ticker, icon);
         _userCreatedTokens[creator].add(token);
         _userManagedTokens[creator].add(token);
         _tokens.add(token);
+        return token;
     }
 
     function collectFees(address token, address recipient, uint amount) onlyOwner external {
@@ -79,6 +82,22 @@ contract Launcher is Ownable {
 
     function getDeployers() external view returns (address[] memory) {
         return _deployers.values();
+    }
+
+    function addProtocol(address protocol) onlyOwner external {
+        _protocols.add(protocol);
+    }
+
+    function removeProtocol(address protocol) onlyOwner external {
+        _protocols.remove(protocol);
+    }
+
+    function getProtocols() external view returns (address[] memory) {
+        return _protocols.values();
+    }
+
+    function isProtocol(address protocol) external view returns (bool) {
+        return _protocols.contains(protocol);
     }
 
     function getUserManagedTokens(address user) external view returns (address[] memory) {

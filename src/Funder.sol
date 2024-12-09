@@ -3,64 +3,71 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./IJobBoard.sol";
-import "./IRegistry.sol";
+import "./Launcher.sol";
 
 contract Funder {
-    using EnumerableSet for EnumerableSet.UintSet;
-    
     address private _token;
-    EnumerableSet.UintSet private _fundedJobs;
-    IRegistry private constant _registry = IRegistry(0x4011AaBAD557be4858E08496Db5B1f506a4e6167);
+    address private _launcher;
 
-    function init(address token, uint budget, address creator, string memory name) external {
+    function init(
+        address token,
+        uint budget,
+        address creator,
+        string memory name,
+        address staker,
+        address launcher
+    ) external {
         require(_token == address(0), "Already Initialized");
         _token = token;
+        _launcher = launcher;
 
         IERC20(token).transferFrom(msg.sender, address(this), budget);
 
-        IJobBoard _jobBoard = IJobBoard(0x2D2BB82ab894267C5Ba80D26e9B4f7470315Bdd8);
+        IERC20(token).approve(staker, type(uint256).max);
 
-        // 20% of the hiring budget to the creator, over 1 year
-        IERC20(token).approve(address(_jobBoard), budget / 5);
-        uint jobId = _jobBoard.create(
+        address board = 0x2D2BB82ab894267C5Ba80D26e9B4f7470315Bdd8;
+
+        IERC20(token).approve(board, budget / 5);
+
+        uint jobId = IJobBoard(board).create(
             string.concat(name, " launch"),
-            "Automatically generated at token launch",
+            "Automatically generated at launch",
             token,
             budget / 5,
             365 days
         );
-        _jobBoard.offer(jobId, creator);
-        _fundedJobs.add(jobId);
+
+        IJobBoard(board).offer(jobId, creator);
     }
 
     function fund(address board, uint jobId, uint quantity) external {
         require(Ownable(_token).owner() == msg.sender, "Not authorized");
-        require(_registry.isRegistrar(board), "Not Job board");
-        require(IJobBoard(board).getDuration(jobId) >= 4 weeks, "Pay duration must be at least 4 weeks");
+        require(Launcher(_launcher).isProtocol(board), "Not Job board");
+        require(IJobBoard(board).getDuration(jobId) >= 7 days, "Job duration must be at least 7 days");
+
         IERC20(_token).approve(board, quantity);
+
         IJobBoard(board).fund(jobId, quantity);
-        _fundedJobs.add(jobId);
     }
 
-    function getFundedJobs() external view returns (uint[] memory) {
-        return _fundedJobs.values();
+    function preapprove(address protocol, uint amount) external {
+        require(Ownable(_token).owner() == msg.sender, "Not authorized");
+        require(Launcher(_launcher).isProtocol(protocol), "Unsupported Protocol");
+        IERC20(_token).approve(protocol, amount);
     }
 
-    function getFundedJobAt(uint index) external view returns (uint) {
-        return _fundedJobs.at(index);
-    }
-
-    function getNumFundedJobs() external view returns (uint) {
-        return _fundedJobs.length();
-    }
-
-    function getRegistry() external pure returns (address) {
-        return address(_registry);
+    function preapprove(address protocol) external {
+        require(Ownable(_token).owner() == msg.sender, "Not authorized");
+        require(Launcher(_launcher).isProtocol(protocol), "Unsupported Protocol");
+        IERC20(_token).approve(protocol, type(uint256).max);
     }
 
     function getToken() external view returns (address) {
         return _token;
+    }
+
+    function getLauncher() external view returns (address) {
+        return _launcher;
     }
 }

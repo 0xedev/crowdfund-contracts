@@ -44,10 +44,8 @@ contract Staker is IRebased {
     }
 
     function createStakePool(address stakeToken, address rewardFunder, uint rewardQuantity, uint rewardDuration) external returns (address) {
-        require(
-            msg.sender == Ownable(_rewardToken).owner(),
-            "Not authorized"
-        );
+        require(msg.sender == Ownable(_rewardToken).owner(), "Not authorized");
+        require(rewardDuration >= 7 days, "Stake rewards must last at least 7 days");
 
         address pool = Clones.cloneDeterministic(address(_poolTemplate), bytes32(_nonce++));
         Pool(pool).init(address(this), rewardQuantity, rewardDuration);
