@@ -90,7 +90,7 @@ contract Locker is IERC721Receiver {
         }
     }
 
-    function collectFees() external returns (uint256, uint256) {
+    function collect() external returns (uint256, uint256) {
         require(msg.sender == _token, "Only Token can collect fees");
 
         INonfungiblePositionManager.CollectParams memory collectParams = INonfungiblePositionManager.CollectParams({

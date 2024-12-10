@@ -2,11 +2,10 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
-import "./Token.sol";
+import "./TokenFactory.sol";
 
 contract Launcher is Ownable {
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -19,16 +18,16 @@ contract Launcher is Ownable {
     mapping(address => EnumerableSet.AddressSet) private _userManagedTokens;
     mapping(address => EnumerableSet.AddressSet) private _userCreatedTokens;
 
-    address private _tokenTemplate;
+    TokenFactory private _tokenFactory;
     uint private _nonce;
     bool private _permissionless;
 
     string constant ERROR_NOT_AUTHORIZED = "Not authorized";
 
     constructor() {
-        _tokenTemplate = address(new Token());
+        _tokenFactory = new TokenFactory();
         _deployers.add(msg.sender);
-        _protocols.add(0x2D2BB82ab894267C5Ba80D26e9B4f7470315Bdd8); // Job Board
+        _protocols.add(0x78a57863A1Bed20F82de28b5ac5CCc5F6B1b6699); // Job Board
     }
 
     function launch(address owner, string memory name, string memory ticker, string memory icon) external payable returns (address) {
@@ -44,15 +43,15 @@ contract Launcher is Ownable {
     }
 
     function _launch(address creator, string memory name, string memory ticker, string memory icon) internal returns (address) {
-        address payable token = payable(Clones.cloneDeterministic(address(_tokenTemplate), bytes32(_nonce++)));
-        Token(token).init{value: msg.value}(creator, name, ticker, icon);
+        address token = _tokenFactory.create{value: msg.value}(creator, name, ticker, icon);
         _userCreatedTokens[creator].add(token);
         _userManagedTokens[creator].add(token);
         _tokens.add(token);
+
         return token;
     }
 
-    function collectFees(address token, address recipient, uint amount) onlyOwner external {
+    function claimFees(address token, address recipient, uint amount) onlyOwner external {
         IERC20(token).transfer(recipient, amount);
     }
 
@@ -68,8 +67,8 @@ contract Launcher is Ownable {
         }
     }
 
-    function updateTokenTemplate(address newTemplate) onlyOwner external {
-        _tokenTemplate = newTemplate;
+    function updateFactory(address newFactory) onlyOwner external {
+        _tokenFactory = TokenFactory(newFactory);
     }
 
     function addDeployer(address deployer) onlyOwner external {

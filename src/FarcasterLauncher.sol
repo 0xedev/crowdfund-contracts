@@ -13,18 +13,19 @@ contract FarcasterLauncher is Ownable {
     using ECDSA for bytes32;
 
     mapping(bytes20 => address) _castToken;
+    mapping(address => bytes20) _tokenCast;
     EnumerableSet.AddressSet private _signers;
 
     uint public FEE = (1 ether) / 1000;
     uint public MIN_BUY = (1 ether) / 1000;
-    ILauncher private constant _launcher = ILauncher(0x521aE994ebdEa950e220dD3e0eEB94843B2c8F26);
+    ILauncher private constant _launcher = ILauncher(0xdbb1f02483B49E813D717Afe4dadF6D76eAF2F8f);
 
     function launch(
-        string memory name, 
-        string memory ticker, 
-        string memory icon, 
-        bytes20 castHash, 
-        address[] memory addresses, 
+        string memory name,
+        string memory ticker,
+        string memory icon,
+        bytes20 castHash,
+        address[] memory addresses,
         bytes memory signature
     ) external payable {
         require(msg.value >= getLaunchCost(), "Insufficient value sent");
@@ -39,14 +40,15 @@ contract FarcasterLauncher is Ownable {
             }
         }
         require(matched, "Address not linked to profile");
-    
+
         _castToken[castHash] = _launcher.launch{value: msg.value - FEE}(msg.sender, name, ticker, icon);
+        _tokenCast[_castToken[castHash]] = castHash;
     }
 
     function _recoverSigner(address[] memory addresses, bytes memory signature) internal pure returns (address) {
         // Compute the hash of the ABI-encoded array
         bytes32 hash = keccak256(abi.encode(addresses));
-        
+
         // Recover the signer address
         return hash.toEthSignedMessageHash().recover(signature);
     }
@@ -78,6 +80,10 @@ contract FarcasterLauncher is Ownable {
 
     function getCastToken(bytes20 castHash) external view returns (address) {
         return _castToken[castHash];
+    }
+
+    function getTokenCast(address token) external view returns (bytes20) {
+        return _tokenCast[token];
     }
 
     function getLaunchCost() public view returns (uint) {

@@ -1,92 +1,63 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/proxy/Clones.sol";
-import "./ILPWrapper.sol";
-import "./Launcher.sol";
-import "./Funder.sol";
-import "./Locker.sol";
-import "./Staker.sol";
 
-contract Token is ERC20Burnable, Ownable {
-    address private constant REFI = 0x7dbdBF103Bb03c6bdc584c0699AA1800566f0F84;
-    address private constant WETH = 0x4200000000000000000000000000000000000006;
+interface ILauncher {
+    function updateOwner(address oldOwner, address newOwner) external;
+}
+
+interface IFactory {
+    function getFunder(address token) external view returns (address);
+    function getLocker(address token) external view returns (address);
+    function getStaker(address token) external view returns (address);
+}
+
+interface ILocker {
+    function collect() external returns (uint256, uint256);
+}
+
+contract Token is ERC20Votes, Ownable {
+    IERC20 private constant WETH = IERC20(0x4200000000000000000000000000000000000006);
 
     uint public constant TOKEN_UNIT = 10**18;
-    uint public constant SUPPLY_MAX =           1000000000 * TOKEN_UNIT;
-    uint public constant SUPPLY_LOOSE_LP =       500000000 * TOKEN_UNIT;
-    uint public constant SUPPLY_LP_INCENTIVES =  250000000 * TOKEN_UNIT;
-    uint public constant SUPPLY_TIGHT_LP =       125000000 * TOKEN_UNIT;
-    uint public constant SUPPLY_HIRING =         125000000 * TOKEN_UNIT;
+    uint public constant SUPPLY_MAX = 1000000000 * TOKEN_UNIT;
 
-    ILPWrapper private constant _lpWrapper = ILPWrapper(0x80D25C6615BA03757619aB427c2D995D8B695162);
-    Launcher private immutable _launcher;
-    address private immutable _funderTemplate;
-    address private immutable _lockerTemplate;
-    address private immutable _stakerTemplate;
-
-    uint private _nonce;
-    Funder private _funder;
-    Locker private _locker;
-    Staker private _staker;
+    ILauncher private _launcher;
+    IFactory private _factory;
 
     mapping(string => string) private _record;
 
-    constructor() ERC20("", "") {
-        _launcher = Launcher(msg.sender);
-        _funderTemplate = address(new Funder());
-        _lockerTemplate = address(new Locker());
-        _stakerTemplate = address(new Staker());
+    constructor() ERC20("","") ERC20Permit("") {
+        _mint(msg.sender, SUPPLY_MAX);
+        _transferOwnership(msg.sender);
     }
 
-    function init(address creator, string memory title, string memory ticker, string memory icon) external payable {
-        require(address(_funder) == address(0), "Already initialized");
+    function init(address launcher, address creator, string memory title, string memory ticker, string memory icon) external {
+        require(address(_launcher) == address(0), "Already initialized");
+
+        _launcher = ILauncher(launcher);
+        _factory = IFactory(msg.sender);
 
         _record["name"] = title;
         _record["symbol"] = ticker;
         _record["image"] = icon;
 
-        address token = address(this);
-        _transferOwnership(token);
-        _mint(token, SUPPLY_MAX);
-
-        // Create the Hiring Fund
-        Funder funder = Funder(Clones.cloneDeterministic(address(_funderTemplate), bytes32(_nonce++)));
-        Locker locker = Locker(payable(Clones.cloneDeterministic(address(_lockerTemplate), bytes32(_nonce++))));
-        Staker staker = Staker(Clones.cloneDeterministic(address(_stakerTemplate), bytes32(_nonce++)));
-
-        _approve(token, address(funder), SUPPLY_HIRING);
-        _approve(token, address(locker), SUPPLY_LOOSE_LP + SUPPLY_TIGHT_LP);
-        _approve(token, address(staker), SUPPLY_LP_INCENTIVES);
-
-        funder.init(token, SUPPLY_HIRING, creator, ticker, address(staker), address(_launcher));
-        locker.init{value: msg.value}(token, SUPPLY_LOOSE_LP + SUPPLY_TIGHT_LP);
-        staker.init(token);
-
-        address LPT = _lpWrapper.createLPToken(token, WETH, 10000);
-        staker.createStakePool(LPT, token, SUPPLY_LP_INCENTIVES * 24 / 25, 730 days);
-        staker.createStakePool(REFI, token, SUPPLY_LP_INCENTIVES * 1 / 25, 30 days);
-
-        _funder = funder;
-        _locker = locker;
-        _staker = staker;
-
         _transferOwnership(creator);
     }
 
-    function collectFees() public {
-        uint balanceBefore = IERC20(WETH).balanceOf(address(this));
-        _locker.collectFees();
-        uint balanceAfter = IERC20(WETH).balanceOf(address(this));
+    function collect() public {
+        uint balanceBefore = WETH.balanceOf(address(this));
+        ILocker(getLocker()).collect();
+        uint balanceAfter = WETH.balanceOf(address(this));
         uint eth = balanceAfter - balanceBefore;
         if (eth > 0) {
             if (owner() == address(0)) {
-                IERC20(WETH).transfer(getLauncher(), eth);
+                WETH.transfer(getLauncher(), eth);
             } else {
-                IERC20(WETH).transfer(getLauncher(), eth / 10);
+                WETH.transfer(getLauncher(), eth / 10);
             }
         }
         uint tokens = balanceOf(address(this));
@@ -96,25 +67,33 @@ contract Token is ERC20Burnable, Ownable {
     }
 
     function claimFeesTo(uint quantity, address recipient) external onlyOwner {
-        collectFees();
-        IERC20(WETH).transfer(recipient, quantity);
+        collect();
+        WETH.transfer(recipient, quantity);
     }
 
     function claimFeesTo(address recipient) external onlyOwner {
-        collectFees();
-        uint quantity = IERC20(WETH).balanceOf(address(this));
-        IERC20(WETH).transfer(recipient, quantity);
+        collect();
+        uint quantity = WETH.balanceOf(address(this));
+        if (quantity > 0) {
+            WETH.transfer(recipient, quantity);
+        }
     }
 
     function claimFees() external onlyOwner {
-        collectFees();
-        uint quantity = IERC20(WETH).balanceOf(address(this));
-        IERC20(WETH).transfer(msg.sender, quantity);
+        collect();
+        uint quantity = WETH.balanceOf(address(this));
+        if (quantity > 0) {
+            WETH.transfer(msg.sender, quantity);
+        }
     }
 
     function renounceOwnership() public override onlyOwner {
         _launcher.updateOwner(owner(), address(0));
         _transferOwnership(address(0));
+        uint balance = WETH.balanceOf(address(this));
+        if (balance > 0) {
+            WETH.transfer(getLauncher(), balance);
+        }
     }
 
     function transferOwnership(address newOwner) public override onlyOwner {
@@ -165,23 +144,19 @@ contract Token is ERC20Burnable, Ownable {
         return _record[key];
     }
 
-    function getLPWrapper() external pure returns (address) {
-        return address(_lpWrapper);
-    }
-
     function getLauncher() public view returns (address) {
         return address(_launcher);
     }
 
     function getFunder() public view returns (address) {
-        return address(_funder);
+        return _factory.getFunder(address(this));
     }
 
-    function getLocker() external view returns (address) {
-        return address(_locker);
+    function getLocker() public view returns (address) {
+        return _factory.getLocker(address(this));
     }
 
     function getStaker() external view returns (address) {
-        return address(_staker);
+        return _factory.getStaker(address(this));
     }
 }

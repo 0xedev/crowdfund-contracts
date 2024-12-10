@@ -26,7 +26,7 @@ contract Funder {
 
         IERC20(token).approve(staker, type(uint256).max);
 
-        address board = 0x2D2BB82ab894267C5Ba80D26e9B4f7470315Bdd8;
+        address board = 0x78a57863A1Bed20F82de28b5ac5CCc5F6B1b6699;
 
         IERC20(token).approve(board, budget / 5);
 
@@ -61,6 +61,11 @@ contract Funder {
         require(Ownable(_token).owner() == msg.sender, "Not authorized");
         require(Launcher(_launcher).isProtocol(protocol), "Unsupported Protocol");
         IERC20(_token).approve(protocol, type(uint256).max);
+    }
+
+    function revoke(address protocol) external {
+        require(Ownable(_token).owner() == msg.sender, "Not authorized");
+        IERC20(_token).approve(protocol, 0);
     }
 
     function getToken() external view returns (address) {
